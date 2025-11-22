@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cat Runner — Game Kucing Lari</title>
+  <style>
+    :root{
+      --bg:#f7f7f7;
+      --ground:#dedede;
+      --accent:#111827;
+      --muted:#6b7280;
+    }
+    *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;}
+    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#f0f4f8,var(--bg));color:var(--accent)}
+    .wrap{width:940px;max-width:96vw;margin:28px}
+    .card{background:white;border-radius:12px;padding:14px;box-shadow:0 8px 30px rgba(2,6,23,0.08)}
+    header{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    h1{margin:0;font-size:18px}
+    .small{font-size:13px;color:var(--muted)}
+    #gameArea{background:linear-gradient(180deg,#eaf2ff,#fff);border-radius:8px;padding:12px;display:flex;gap:12px;align-items:center}
+    canvas{background:transparent;border-radius:6px;display:block;width:100%;height:160px}
+    .sidebar{width:230px;flex-shrink:0}
+    .stat{background:var(--ground);padding:10px;border-radius:8px;margin-bottom:8px;text-align:center}
+    .btn{background:#0ea5a4;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid rgba(0,0,0,0.08);color:var(--muted)}
+    footer.small{font-size:12px;color:var(--muted);margin-top:8px}
+    @media (max-width:900px){ #gameArea{flex-direction:column} .sidebar{width:100%} canvas{height:200px} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <div style="width:56px;height:56px;border-radius:10px;background:linear-gradient(45deg,#7c3aed,#06b6d4);display:flex;align-items:center;justify-content:center;color:white;font-weight:700">CR</div>
+        <div>
+          <h1>Cat Runner</h1>
+          <div class="small">Game endless-runner — tekan <strong>Space</strong> atau <strong>Arrow Up</strong> untuk melompat. Sentuh layar untuk mobile.</div>
+        </div>
+      </header>
+
+      <div id="gameArea">
+        <div style="flex:1;min-width:300px">
+          <canvas id="gameCanvas" width="760" height="160" aria-label="Cat Runner game"></canvas>
+        </div>
+
+        <aside class="sidebar">
+          <div class="stat">
+            <div class="small">Skor</div>
+            <div id="score" style="font-size:22px;font-weight:700">0</div>
+          </div>
+          <div class="stat">
+            <div class="small">Highscore</div>
+            <div id="highscore" style="font-size:22px;font-weight:700">0</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button class="btn" id="startBtn">Start</button>
+            <button class="btn ghost" id="resetBtn">Reset</button>
+          </div>
+
+          <div class="small" style="margin-top:10px;background:var(--ground);padding:8px;border-radius:8px">
+            <strong>Kontrol</strong>
+            <ul style="padding-left:16px;margin:8px 0 0 0">
+              <li>Space / Arrow Up = lompat</li>
+              <li>Touch layar juga lompat (mobile)</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="small">Tip: semakin lama kamu bertahan, semakin cepat game — hati-hati!</footer>
+    </div>
+  </div>
+
+<script>
+/* Cat Runner — HTML5 Canvas
+   - Single-file game
+   - Keyboard: Space / ArrowUp to jump
+   - Touch support: tap to jump
+   - Obstacles spawn procedurally, speed increases over time
+   - Highscore saved to localStorage
+*/
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let W = canvas.width = canvas.clientWidth;
+let H = canvas.height = canvas.clientHeight;
+
+window.addEventListener('resize', ()=> {
+  W = canvas.width = canvas.clientWidth;
+  H = canvas.height = canvas.clientHeight;
+  draw(); // redraw to adapt size
+});
+
+// UI elements
+const scoreEl = document.getElementById('score');
+const highEl = document.getElementById('highscore');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+const STORAGE_KEY = 'catrunner_highscore_v1';
+let highscore = parseInt(localStorage.getItem(STORAGE_KEY) || '0', 10);
+highEl.textContent = highscore;
+
+// Game state
+let running = false;
+let score = 0;
+let speed = 6;       // world speed (px per frame baseline)
+let spawnTimer = 0;
+let spawnInterval = 90; // frames
+let obstacles = [];
+let frame = 0;
+
+// physics
+const gravity = 0.9;
+const groundY = H * 0.78; // y position of ground line
+
+// cat player
+const player = {
+  x: Math.round(W * 0.12),
+  y: groundY,
+  w: 44,
+  h: 34,
+  vy: 0,
+  isOnGround: true,
+  jumpForce: -14,
+  scale: 1
+};
+
+// helper rand
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+// Obstacle class
+class Obstacle {
+  constructor(type){
+    this.type = type; // 'box' or 'spike'
+    if(type === 'box'){
+      this.w = rand(18,36);
+      this.h = rand(22,44);
+    } else {
+      this.w = rand(18,28);
+      this.h = this.w * 1.1;
+    }
+    this.x = W + rand(10,60);
+    this.y = groundY - this.h + 6; // small overlap with ground for nicer look
+    this.passed = false;
+  }
+  update(){
+    this.x -= speed;
+  }
+  draw(){
+    ctx.save();
+    if(this.type === 'box'){
+      // draw crate-like obstacle
+      ctx.fillStyle = '#2b2b2b';
+      roundRect(ctx, this.x, this.y, this.w, this.h, 4, true, false);
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(this.x+3, this.y+3, this.w-6, 3);
+    } else {
+      // draw spike / small cactus
+      ctx.fillStyle = '#165f46';
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y+this.h);
+      ctx.lineTo(this.x + this.w/2, this.y);
+      ctx.lineTo(this.x + this.w, this.y+this.h);
+      ctx.closePath();
+      ctx.fill();
+      // inner
+      ctx.fillStyle = '#10b981';
+      ctx.fillRect(this.x + this.w*0.28, this.y + this.h*0.55, this.w*0.12, this.h*0.15);
+    }
+    ctx.restore();
+  }
+}
+
+// utility: rounded rect
+function roundRect(ctx,x,y,w,h,r,fill,stroke){
+  if (typeof r === 'undefined') r = 5;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y,   x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x,   y + h, r);
+  ctx.arcTo(x,   y + h, x,   y,   r);
+  ctx.arcTo(x,   y,   x + w, y,   r);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+// draw cat using canvas shapes (no external image)
+function drawCat(x,y,w,h,frameOffset){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.scale(w/80, h/60); // design baseline -> scale
+  // body
+  ctx.fillStyle = '#f59e0b';
+  roundRect(ctx, 6, 18, 50, 28, 8, true, false);
+  // head
+  roundRect(ctx, -4, -8, 32, 30, 8, true, false);
+  // ears
+  ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(6,-20); ctx.lineTo(12,-6); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(20,-6); ctx.lineTo(26,-20); ctx.lineTo(32,-6); ctx.closePath(); ctx.fill();
+  // tail
+  ctx.beginPath(); ctx.moveTo(56,24); ctx.quadraticCurveTo(72,10,64,4); ctx.quadraticCurveTo(68,12,58,24); ctx.fill();
+  // stripes
+  ctx.fillStyle = '#b45309';
+  ctx.fillRect(10,22,8,3);
+  ctx.fillRect(28,22,8,3);
+  // eye
+  ctx.fillStyle = '#111827';
+  ctx.beginPath(); ctx.arc(8,4,3,0,Math.PI*2); ctx.fill();
+  // mouth
+  ctx.strokeStyle = '#111827'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(14,12); ctx.quadraticCurveTo(8,14,6,12); ctx.stroke();
+  // little legs (animate)
+  const legOffset = Math.sin(frameOffset*0.25) * 4;
+  ctx.fillStyle = '#d97706';
+  roundRect(ctx, 12, 38 + legOffset*0.2, 10, 8, 4, true, false);
+  roundRect(ctx, 32, 38 - legOffset*0.2, 10, 8, 4, true, false);
+
+  ctx.restore();
+}
+
+// collision detection AABB
+function isColliding(a, b){
+  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+}
+
+// game loop
+function update(){
+  if(!running) return;
+  frame++;
+
+  // increase difficulty slowly
+  if(frame % 240 === 0) speed += 0.6; // every ~4 seconds
+  score = Math.floor(frame / 6); // score grows with frames
+  scoreEl.textContent = score;
+
+  // spawn obstacles
+  spawnTimer++;
+  const adjustedSpawn = Math.max(38, spawnInterval - Math.floor(speed));
+  if(spawnTimer > adjustedSpawn){
+    spawnTimer = 0;
+    // pick type with bias
+    const t = Math.random() < 0.6 ? 'box' : 'spike';
+    obstacles.push(new Obstacle(t));
+  }
+
+  // update player physics
+  player.vy += gravity;
+  player.y += player.vy;
+  if(player.y >= groundY - player.h + 6){
+    player.y = groundY - player.h + 6;
+    player.vy = 0;
+    player.isOnGround = true;
+  } else {
+    player.isOnGround = false;
+  }
+
+  // update obstacles
+  for(let i=obstacles.length-1;i>=0;i--){
+    const ob = obstacles[i];
+    ob.update();
+    // mark passed
+    if(!ob.passed && ob.x + ob.w < player.x){
+      ob.passed = true;
+    }
+    // remove if off-screen
+    if(ob.x + ob.w < -50) obstacles.splice(i,1);
+  }
+
+  // collisions
+  const playerBox = { x: player.x, y: player.y, w: player.w, h: player.h };
+  for(const ob of obstacles){
+    const obBox = { x: ob.x, y: ob.y, w: ob.w, h: ob.h };
+    if(isColliding(playerBox, obBox)){
+      // hit!
+      endGame();
+      return;
+    }
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+// draw scene
+function draw(){
+  // clear
+  ctx.clearRect(0,0,W,H);
+
+  // sky (subtle)
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, '#ecfeff');
+  grad.addColorStop(1, '#ffffff');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
+
+  // ground
+  ctx.fillStyle = '#efefef';
+  ctx.fillRect(0, groundY, W, H - groundY);
+
+  // dashed ground line
+  ctx.strokeStyle = '#d1d5db';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8,10]);
+  ctx.beginPath();
+  ctx.moveTo(0, groundY+1);
+  ctx.lineTo(W, groundY+1);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // draw obstacles
+  for(const ob of obstacles) ob.draw();
+
+  // draw player (cat)
+  // small bob when on ground
+  const bob = player.isOnGround ? Math.sin(frame*0.15)*1.2 : 0;
+  drawCat(player.x, player.y + bob, player.w, player.h, frame);
+
+  // HUD: speed small
+  ctx.font = '11px Inter, Arial';
+  ctx.fillStyle = '#374151';
+  ctx.fillText('Speed: ' + Math.round(speed*10)/10, 8, 14);
+}
+
+// start game
+function startGame(){
+  if(running) return;
+  // reset
+  running = true;
+  score = 0;
+  frame = 0;
+  speed = 6;
+  obstacles = [];
+  spawnTimer = 0;
+  player.y = groundY - player.h + 6;
+  player.vy = 0;
+  player.isOnGround = true;
+  startBtn.textContent = 'Running...';
+  startBtn.disabled = true;
+  update();
+}
+
+// end game
+function endGame(){
+  running = false;
+  startBtn.textContent = 'Start';
+  startBtn.disabled = false;
+  // check highscore
+  if(score > highscore){
+    highscore = score;
+    localStorage.setItem(STORAGE_KEY, highscore);
+    highEl.textContent = highscore;
+    // small flash: draw "New Highscore" overlay briefly
+    flashMessage('New Highscore! 🎉');
+  } else {
+    flashMessage('Game Over — Skor: ' + score);
+  }
+}
+
+// flash message
+function flashMessage(text){
+  const prev = document.getElementById('msgOverlay');
+  if(prev) prev.remove();
+  const div = document.createElement('div');
+  div.id = 'msgOverlay';
+  div.style.position = 'absolute';
+  div.style.left = canvas.getBoundingClientRect().left + 'px';
+  div.style.top = canvas.getBoundingClientRect().top + 'px';
+  div.style.width = canvas.clientWidth + 'px';
+  div.style.height = canvas.clientHeight + 'px';
+  div.style.display = 'flex';
+  div.style.alignItems = 'center';
+  div.style.justifyContent = 'center';
+  div.style.pointerEvents = 'none';
+  div.style.fontFamily = 'Inter, Arial';
+  div.style.fontSize = '18px';
+  div.style.fontWeight = '700';
+  div.style.color = '#0f1724';
+  div.style.zIndex = 99;
+  div.textContent = text;
+  document.body.appendChild(div);
+  setTimeout(()=>{ div.remove(); }, 1400);
+}
+
+// controls
+function jump(){
+  if(!running) startGame();
+  if(player.isOnGround){
+    player.vy = player.jumpForce;
+    player.isOnGround = false;
+  }
+}
+window.addEventListener('keydown', (e)=>{
+  if(e.code === 'Space' || e.code === 'ArrowUp'){
+    e.preventDefault();
+    jump();
+  }
+  if(e.code === 'KeyR' && !running){
+    startGame();
+  }
+});
+canvas.addEventListener('touchstart', (e)=>{
+  e.preventDefault();
+  jump();
+}, {passive:false});
+canvas.addEventListener('mousedown', (e)=>{ jump(); });
+
+// buttons
+startBtn.addEventListener('click', ()=> {
+  if(!running) startGame();
+});
+resetBtn.addEventListener('click', ()=> {
+  if(confirm('Reset highscore?')){
+    localStorage.removeItem(STORAGE_KEY);
+    highscore = 0;
+    highEl.textContent = 0;
+  }
+});
+
+// initial draw & instructions text overlay
+function init(){
+  draw();
+  // overlay small start hint
+  ctx.font = '14px Inter, Arial';
+  ctx.fillStyle = '#374151';
+  ctx.fillText('Tekan Space / Ketuk layar untuk mulai', 12, 28);
+}
+init();
+
+</script>
+</body>
+</html>
